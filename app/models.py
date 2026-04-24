@@ -19,8 +19,10 @@ class Status(str, enum.Enum):
 
     @staticmethod
     def worst(a: "Status", b: "Status") -> "Status":
-        order = {Status.GREEN: 0, Status.YELLOW: 1, Status.RED: 2, Status.UNKNOWN: 3}
-        return a if order.get(a, 3) >= order.get(b, 3) else b
+        # Priority: RED > YELLOW > GREEN > UNKNOWN
+        # UNKNOWN means "no data yet" and must NEVER mask a real RED or YELLOW.
+        order = {Status.UNKNOWN: 0, Status.GREEN: 1, Status.YELLOW: 2, Status.RED: 3}
+        return a if order.get(a, 0) >= order.get(b, 0) else b
 
 
 class Component(str, enum.Enum):

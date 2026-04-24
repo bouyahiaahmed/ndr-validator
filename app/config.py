@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     SENSOR_SSH_USER: str = "vagrant"
     SENSOR_SSH_PORT: int = 22
     SENSOR_SSH_KEY_PATH: str = "/run/secrets/sensor_ssh_key"
+    # Path to a known_hosts file for SSH host key verification.
+    # Empty string = disable host key verification only when ENABLE_DEBUG_INSECURE_SKIP_VERIFY=true,
+    # otherwise asyncssh system defaults are used.
+    SENSOR_SSH_KNOWN_HOSTS_PATH: str = ""
     SENSOR_SSH_CONNECT_TIMEOUT_SECONDS: int = 5
     ZEEK_LOG_DIR: str = "/opt/zeek/logs/current"
     ZEEK_SERVICE_NAME: str = "zeek"

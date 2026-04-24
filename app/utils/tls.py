@@ -57,6 +57,22 @@ def get_httpx_verify(
     return True
 
 
+def get_httpx_cert(
+    client_cert_path: Optional[str] = None,
+    client_key_path: Optional[str] = None,
+) -> "Optional[tuple[str, str]]":
+    """Return an (cert, key) tuple for httpx mTLS, or None if not configured.
+
+    Paths are taken from arguments first, then from settings defaults.
+    Returns None when either file is missing so callers can pass through safely.
+    """
+    cert = client_cert_path or ""
+    key = client_key_path or ""
+    if cert and key and os.path.isfile(cert) and os.path.isfile(key):
+        return (cert, key)
+    return None
+
+
 def classify_tls_error(error: Exception) -> str:
     """Classify a TLS error into a human-readable category."""
     msg = str(error).lower()
