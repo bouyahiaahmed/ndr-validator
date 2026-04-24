@@ -247,6 +247,53 @@ curl -s "http://localhost:8000/history?limit=10" | jq '[.[] | {timestamp, overal
 
 ---
 
+## Vector→DataPrepper Drop Rate and Intentional Filtering
+
+### Why `VECTOR_DATAPREPPER_SINK_COMPONENTS` is required
+
+Vector pipelines typically filter noisy logs before forwarding to Data Prepper:
+
+```
+zeek_raw → zeek_parse_json → zeek_filter → zeek_drop_azure_ips → … → dp_ingest
+```
+
+If the validator sums **all** Vector `sent_events` (sources + transforms + all sinks) and
+compares it to Data Prepper `records_processed`, the drop rate will be massively inflated —
+because transform components re-emit the same event multiple times through the pipeline.
+
+Set `VECTOR_DATAPREPPER_SINK_COMPONENTS` to the `component_id` of the **final HTTP sink**
+that delivers to Data Prepper:
+
+```dotenv
+# In your Vector config: [sinks.dp_ingest]
+VECTOR_DATAPREPPER_SINK_COMPONENTS=dp_ingest
+```
+
+The validator then uses only `vector_component_sent_events_total{component_id="dp_ingest"}`
+for the drop-rate numerator — which is the events that actually left Vector toward DP.
+
+### Auto-detection (fallback)
+
+If `VECTOR_DATAPREPPER_SINK_COMPONENTS` is not set, the validator tries to infer the sink:
+- Finds all `component_kind="sink"` components
+- Excludes `prometheus_exporter`, `prom_metrics`, and similar
+- If **exactly one** HTTP sink remains → uses it automatically
+- If **zero or multiple** → marks `corr.vector_dp.drop_rate` as **UNKNOWN** (not RED)
+
+### Intentional filtering observability
+
+Intentional discards from filter transforms are reported as a separate GREEN check
+`corr.vector_dp.filtering` and are **never** counted as delivery loss:
+
+```
+vector_component_discarded_events_total{intentional="true",...}
+```
+
+This check shows the filtering reduction percentage so you can monitor filter effectiveness
+without confusing it with a pipeline failure.
+
+---
+
 ## Data Prepper Management Metrics
 
 The validator scrapes Data Prepper's internal metrics (pipeline throughput, buffer usage,

@@ -49,6 +49,12 @@ class Settings(BaseSettings):
     VECTOR_METRICS_SCHEME: str = "http"
     VECTOR_METRICS_PORT: int = 9598
     VECTOR_METRICS_PATH: str = "/metrics"
+    # Comma-separated Vector component IDs for the sink that delivers to Data Prepper.
+    # Example: VECTOR_DATAPREPPER_SINK_COMPONENTS=dp_ingest
+    # Without this the validator tries to auto-detect a single HTTP sink.
+    # If auto-detection is ambiguous (0 or >1 HTTP sinks) the drop-rate check
+    # will be UNKNOWN instead of a false RED.
+    VECTOR_DATAPREPPER_SINK_COMPONENTS: str = ""
 
     # ── Data Prepper Management ───────────────────────────────────────
     DATAPREPPER_HOST: str = "dataprepper"
@@ -134,6 +140,11 @@ class Settings(BaseSettings):
         if not self.SENSOR_LIST.strip():
             return []
         return [s.strip() for s in self.SENSOR_LIST.split(",") if s.strip()]
+
+    @property
+    def vector_dp_sink_ids(self) -> List[str]:
+        """Parsed list of Vector component IDs that deliver to Data Prepper."""
+        return [s.strip() for s in self.VECTOR_DATAPREPPER_SINK_COMPONENTS.split(",") if s.strip()]
 
     @property
     def sensor_name_map(self) -> Dict[str, str]:
