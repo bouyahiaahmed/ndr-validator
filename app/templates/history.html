@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"><title>History – NDR Validator</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="header"><div class="header-inner">
+    <h1><a href="/">NDR Validator</a> › History</h1>
+  </div></header>
+  <div class="container">
+    <section class="section">
+      <h2>Recent History ({{ records | length }} records)</h2>
+      <table class="table">
+        <thead><tr><th>Time</th><th>Overall</th><th>Checks</th><th>Red</th><th>Yellow</th><th>Green</th><th>Components</th></tr></thead>
+        <tbody>
+          {% for r in records %}
+          <tr class="row-{{ r.overall_status.value }}">
+            <td class="mono">{{ r.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+            <td><span class="badge badge-{{ r.overall_status.value }}">{{ r.overall_status.value }}</span></td>
+            <td>{{ r.check_count }}</td>
+            <td class="text-red">{{ r.red_count }}</td>
+            <td class="text-yellow">{{ r.yellow_count }}</td>
+            <td class="text-green">{{ r.green_count }}</td>
+            <td class="mono" style="font-size:11px">
+              {% for k, v in r.component_statuses.items() %}
+              <span class="badge badge-{{ v }}">{{ k }}</span>
+              {% endfor %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+  </div>
+</body>
+</html>

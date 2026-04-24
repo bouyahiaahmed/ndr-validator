@@ -1,0 +1,146 @@
+version: "3.9"
+
+services:
+  validator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ndr-validator:latest
+    container_name: ndr-validator
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - APP_ENV=${APP_ENV:-prod}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - SCRAPE_INTERVAL_SECONDS=${SCRAPE_INTERVAL_SECONDS:-30}
+      - REQUEST_TIMEOUT_SECONDS=${REQUEST_TIMEOUT_SECONDS:-5}
+      - SQLITE_DB_PATH=/data/validator.db
+      - TZ=${TZ:-UTC}
+
+      # Sensors
+      - SENSOR_LIST=${SENSOR_LIST}
+      - EXPECTED_SENSOR_COUNT=${EXPECTED_SENSOR_COUNT}
+      - SENSOR_NAME_MAP_JSON=${SENSOR_NAME_MAP_JSON:-{}}
+
+      # SSH probing
+      - ENABLE_SENSOR_SSH=${ENABLE_SENSOR_SSH:-false}
+      - SENSOR_SSH_USER=${SENSOR_SSH_USER:-vagrant}
+      - SENSOR_SSH_PORT=${SENSOR_SSH_PORT:-22}
+      - SENSOR_SSH_KEY_PATH=/run/secrets/sensor_ssh_key
+      - SENSOR_SSH_CONNECT_TIMEOUT_SECONDS=${SENSOR_SSH_CONNECT_TIMEOUT_SECONDS:-5}
+      - ZEEK_LOG_DIR=${ZEEK_LOG_DIR:-/opt/zeek/logs/current}
+      - ZEEK_SERVICE_NAME=${ZEEK_SERVICE_NAME:-zeek}
+      - VECTOR_SERVICE_NAME=${VECTOR_SERVICE_NAME:-vector}
+
+      # Vector metrics
+      - VECTOR_METRICS_SCHEME=${VECTOR_METRICS_SCHEME:-http}
+      - VECTOR_METRICS_PORT=${VECTOR_METRICS_PORT:-9598}
+      - VECTOR_METRICS_PATH=${VECTOR_METRICS_PATH:-/metrics}
+
+      # Data Prepper
+      - DATAPREPPER_HOST=${DATAPREPPER_HOST}
+      - DATAPREPPER_METRICS_SCHEME=${DATAPREPPER_METRICS_SCHEME:-https}
+      - DATAPREPPER_METRICS_PORT=${DATAPREPPER_METRICS_PORT:-4900}
+      - DATAPREPPER_METRICS_PATH=${DATAPREPPER_METRICS_PATH:-/metrics/sys}
+      - DATAPREPPER_USERNAME=${DATAPREPPER_USERNAME:-admin}
+      - DATAPREPPER_PASSWORD=${DATAPREPPER_PASSWORD}
+      - DATAPREPPER_INGEST_SCHEME=${DATAPREPPER_INGEST_SCHEME:-https}
+      - DATAPREPPER_INGEST_PORT=${DATAPREPPER_INGEST_PORT:-2021}
+      - DATAPREPPER_INGEST_PATH=${DATAPREPPER_INGEST_PATH:-/log/ingest}
+      - DATAPREPPER_HEALTH_PATH=${DATAPREPPER_HEALTH_PATH:-/health}
+      - DATAPREPPER_INGEST_USERNAME=${DATAPREPPER_INGEST_USERNAME:-vector}
+      - DATAPREPPER_INGEST_PASSWORD=${DATAPREPPER_INGEST_PASSWORD}
+      - DATAPREPPER_HEALTH_REQUIRES_AUTH=${DATAPREPPER_HEALTH_REQUIRES_AUTH:-true}
+
+      # OpenSearch
+      - OPENSEARCH_SCHEME=${OPENSEARCH_SCHEME:-https}
+      - OPENSEARCH_HOST=${OPENSEARCH_HOST}
+      - OPENSEARCH_PORT=${OPENSEARCH_PORT:-9200}
+      - OPENSEARCH_USERNAME=${OPENSEARCH_USERNAME:-admin}
+      - OPENSEARCH_PASSWORD=${OPENSEARCH_PASSWORD}
+      - OPENSEARCH_INDEX_PATTERN=${OPENSEARCH_INDEX_PATTERN:-zeek-*}
+      - OPENSEARCH_SENSOR_ID_FIELD=${OPENSEARCH_SENSOR_ID_FIELD:-host.name.keyword}
+      - OPENSEARCH_LOG_TYPE_FIELD=${OPENSEARCH_LOG_TYPE_FIELD:-log_type.keyword}
+      - OPENSEARCH_TIMESTAMP_FIELD=${OPENSEARCH_TIMESTAMP_FIELD:-@timestamp}
+
+      # Dashboards
+      - DASHBOARDS_SCHEME=${DASHBOARDS_SCHEME:-https}
+      - DASHBOARDS_HOST=${DASHBOARDS_HOST}
+      - DASHBOARDS_PORT=${DASHBOARDS_PORT:-5601}
+      - DASHBOARDS_BASE_PATH=${DASHBOARDS_BASE_PATH:-}
+      - DASHBOARDS_USERNAME=${DASHBOARDS_USERNAME:-admin}
+      - DASHBOARDS_PASSWORD=${DASHBOARDS_PASSWORD}
+      - DASHBOARDS_STATUS_PATH=${DASHBOARDS_STATUS_PATH:-/api/status}
+      - DASHBOARDS_ENABLE_STATUS_API_CHECK=${DASHBOARDS_ENABLE_STATUS_API_CHECK:-true}
+      - DASHBOARDS_CA_CERT_PATH=/certs/ca/ca.crt
+
+      # Certificates
+      - CA_CERT_PATH=/certs/ca/ca.crt
+      - OPENSEARCH_CLIENT_CERT_PATH=${OPENSEARCH_CLIENT_CERT_PATH:-}
+      - OPENSEARCH_CLIENT_KEY_PATH=${OPENSEARCH_CLIENT_KEY_PATH:-}
+      - DATAPREPPER_CLIENT_CERT_PATH=${DATAPREPPER_CLIENT_CERT_PATH:-}
+      - DATAPREPPER_CLIENT_KEY_PATH=${DATAPREPPER_CLIENT_KEY_PATH:-}
+
+      # Thresholds
+      - STALE_DATA_THRESHOLD_SECONDS=${STALE_DATA_THRESHOLD_SECONDS:-120}
+      - CRITICAL_STALE_DATA_THRESHOLD_SECONDS=${CRITICAL_STALE_DATA_THRESHOLD_SECONDS:-300}
+      - MAX_VECTOR_TO_DP_DROP_PERCENT=${MAX_VECTOR_TO_DP_DROP_PERCENT:-5}
+      - MAX_DP_TO_OS_DROP_PERCENT=${MAX_DP_TO_OS_DROP_PERCENT:-5}
+      - MAX_DP_PIPELINE_LATENCY_SECONDS_WARN=${MAX_DP_PIPELINE_LATENCY_SECONDS_WARN:-5}
+      - MAX_DP_PIPELINE_LATENCY_SECONDS_CRIT=${MAX_DP_PIPELINE_LATENCY_SECONDS_CRIT:-30}
+      - MAX_DP_BUFFER_USAGE_RATIO_WARN=${MAX_DP_BUFFER_USAGE_RATIO_WARN:-0.7}
+      - MAX_DP_BUFFER_USAGE_RATIO_CRIT=${MAX_DP_BUFFER_USAGE_RATIO_CRIT:-0.9}
+      - MAX_DP_BUFFER_WRITE_FAILURE_DELTA=${MAX_DP_BUFFER_WRITE_FAILURE_DELTA:-0}
+      - MAX_DP_DOCUMENT_ERROR_DELTA=${MAX_DP_DOCUMENT_ERROR_DELTA:-0}
+      - MAX_DP_BULK_FAILURE_DELTA=${MAX_DP_BULK_FAILURE_DELTA:-0}
+      - MAX_DP_TLS_HANDSHAKE_FAILURE_DELTA=${MAX_DP_TLS_HANDSHAKE_FAILURE_DELTA:-0}
+      - MAX_OS_SEARCH_LATENCY_MS_WARN=${MAX_OS_SEARCH_LATENCY_MS_WARN:-500}
+      - MAX_OS_SEARCH_LATENCY_MS_CRIT=${MAX_OS_SEARCH_LATENCY_MS_CRIT:-2000}
+      - LOW_DISK_THRESHOLD_PERCENT=${LOW_DISK_THRESHOLD_PERCENT:-15}
+      - HIGH_HEAP_THRESHOLD_PERCENT=${HIGH_HEAP_THRESHOLD_PERCENT:-85}
+      - REQUIRED_LOG_TYPES=${REQUIRED_LOG_TYPES:-conn,dns,http,ssl,files}
+      - REQUIRED_FIELDS=${REQUIRED_FIELDS:-@timestamp,source.ip,destination.ip,network.protocol}
+      - ENABLE_DEBUG_INSECURE_SKIP_VERIFY=${ENABLE_DEBUG_INSECURE_SKIP_VERIFY:-false}
+
+      # DLQ
+      - ENABLE_DP_DLQ_CHECK=${ENABLE_DP_DLQ_CHECK:-false}
+      - DP_DLQ_GLOB=${DP_DLQ_GLOB:-/tmp/dp-dlq-*.log}
+
+    volumes:
+      # SQLite persistence
+      - validator-data:/data
+      # CA certificate (required)
+      - ${CA_CERT_LOCAL_PATH:-./certs/ca}:/certs/ca:ro
+      # Optional client certs
+      - ${CLIENT_CERT_LOCAL_PATH:-./certs/client}:/certs/client:ro
+      # SSH key for Zeek sensor probing (optional)
+      - ${SSH_KEY_LOCAL_PATH:-./secrets/sensor_ssh_key}:/run/secrets/sensor_ssh_key:ro
+
+    networks:
+      - ndr-monitoring
+
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+volumes:
+  validator-data:
+    driver: local
+
+networks:
+  ndr-monitoring:
+    driver: bridge
+    # If your NDR components are on an external Docker network, use:
+    # external: true
+    # name: ndr-network

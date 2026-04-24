@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"><title>{{ comp.name.value | upper }} – NDR Validator</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="header"><div class="header-inner">
+    <h1><a href="/">NDR Validator</a> › {{ comp.name.value | upper }}</h1>
+    <span class="badge badge-{{ comp.status.value }}">{{ comp.status.value | upper }}</span>
+  </div></header>
+  <div class="container">
+    <section class="section">
+      <h2>Checks ({{ comp.checks | length }})</h2>
+      <div class="checks-list">
+        {% for c in comp.checks | sort(attribute='status.value') %}
+        <div class="check-item status-{{ c.status.value }}">
+          <span class="badge badge-{{ c.status.value }}">{{ c.status.value }}</span>
+          <div class="check-body">
+            <div class="check-title">{{ c.title }}</div>
+            <div class="check-details">{{ c.details }}</div>
+            {% if c.current_value is not none %}<div class="check-meta">Value: {{ c.current_value }}{% if c.threshold is not none %} / Threshold: {{ c.threshold }}{% endif %}</div>{% endif %}
+            {% if c.remediation %}<div class="check-remediation">⚙ {{ c.remediation }}</div>{% endif %}
+            {% if c.sensor %}<div class="check-meta">Sensor: {{ c.sensor }}</div>{% endif %}
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </section>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

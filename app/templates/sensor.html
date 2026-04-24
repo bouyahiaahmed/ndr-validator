@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"><title>{{ sensor.display_name }} – NDR Validator</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="header"><div class="header-inner">
+    <h1><a href="/">NDR Validator</a> › Sensor: {{ sensor.display_name }}</h1>
+    <span class="badge badge-{{ sensor.status.value }}">{{ sensor.status.value | upper }}</span>
+  </div></header>
+  <div class="container">
+    <div class="card-grid" style="margin-bottom:24px">
+      <div class="card"><div class="card-label">IP</div><div class="card-value mono" style="font-size:16px">{{ sensor.sensor_ip }}</div></div>
+      <div class="card"><div class="card-label">Status</div><span class="badge badge-{{ sensor.status.value }}">{{ sensor.status.value | upper }}</span></div>
+      <div class="card"><div class="card-label">Checks</div><div class="card-value">{{ sensor.checks | length }}</div></div>
+    </div>
+    <section class="section">
+      <h2>Checks</h2>
+      <div class="checks-list">
+        {% for c in sensor.checks | sort(attribute='status.value') %}
+        <div class="check-item status-{{ c.status.value }}">
+          <span class="badge badge-{{ c.status.value }}">{{ c.status.value }}</span>
+          <div class="check-body">
+            <div class="check-title">{{ c.title }}</div>
+            <div class="check-details">{{ c.details }}</div>
+            {% if c.current_value is not none %}<div class="check-meta">Value: {{ c.current_value }}{% if c.threshold is not none %} / Threshold: {{ c.threshold }}{% endif %}</div>{% endif %}
+            {% if c.remediation %}<div class="check-remediation">⚙ {{ c.remediation }}</div>{% endif %}
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </section>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

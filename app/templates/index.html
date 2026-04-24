@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NDR Pipeline Validator</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="header">
+    <div class="header-inner">
+      <h1>NDR Pipeline Validator</h1>
+      <div class="header-right">
+        {% if summary %}
+          <span class="badge badge-{{ summary.overall_status.value }}">{{ summary.overall_status.value | upper }}</span>
+          <span class="ts">{{ summary.timestamp.strftime('%Y-%m-%d %H:%M:%S UTC') }}</span>
+        {% else %}
+          <span class="badge badge-unknown">INITIALIZING</span>
+        {% endif %}
+      </div>
+    </div>
+  </header>
+
+  {% if not summary %}
+  <div class="container">
+    <div class="alert alert-warning">First scrape cycle in progress. Refresh in 30 seconds.</div>
+  </div>
+  {% else %}
+
+  <!-- Pipeline diagram -->
+  <div class="container">
+    <section class="pipeline-diagram">
+      {% set comps = {} %}
+      {% for c in summary.components %}{% set _ = comps.update({c.name.value: c}) %}{% endfor %}
+      {% for stage in ['zeek','vector','dataprepper','opensearch','dashboards'] %}
+        {% set c = comps.get(stage) %}
+        <div class="pipe-stage pipe-stage-{{ c.status.value if c else 'unknown' }}">
+          <div class="pipe-name">{{ stage | upper }}</div>
+          <div class="pipe-status">{{ (c.status.value | upper) if c else 'UNKNOWN' }}</div>
+        </div>
+        {% if not loop.last %}<div class="pipe-arrow">→</div>{% endif %}
+      {% endfor %}
+    </section>
+
+    <!-- Urgent findings -->
+    {% if summary.urgent_findings %}
+    <section class="section">
+      <h2>⚠ Urgent Findings</h2>
+      <table class="table">
+        <thead><tr><th>#</th><th>Component</th><th>Status</th><th>Title</th><th>Details</th><th>Remediation</th></tr></thead>
+        <tbody>
+          {% for f in summary.urgent_findings %}
+          <tr class="row-{{ f.status.value }}">
+            <td>{{ f.rank }}</td>
+            <td><span class="badge badge-{{ f.component.value }}">{{ f.component.value }}</span></td>
+            <td><span class="badge badge-{{ f.status.value }}">{{ f.status.value }}</span></td>
+            <td>{{ f.title }}</td>
+            <td>{{ f.details }}</td>
+            <td class="remediation">{{ f.remediation }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+    {% endif %}
+
+    <!-- Pipeline rates -->
+    <section class="section">
+      <h2>Pipeline Rates</h2>
+      <div class="card-grid">
+        <div class="card">
+          <div class="card-label">Vector→DP Drop</div>
+          <div class="card-value {% if summary.rates.vector_to_dp_drop_percent and summary.rates.vector_to_dp_drop_percent > 5 %}text-red{% endif %}">
+            {{ '%.1f%%' % summary.rates.vector_to_dp_drop_percent if summary.rates.vector_to_dp_drop_percent is not none else 'N/A' }}
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-label">DP→OpenSearch Drop</div>
+          <div class="card-value {% if summary.rates.dp_to_os_drop_percent and summary.rates.dp_to_os_drop_percent > 5 %}text-red{% endif %}">
+            {{ '%.1f%%' % summary.rates.dp_to_os_drop_percent if summary.rates.dp_to_os_drop_percent is not none else 'N/A' }}
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-label">Overall Freshness</div>
+          <div class="card-value {% if summary.rates.overall_freshness_seconds and summary.rates.overall_freshness_seconds > 120 %}text-yellow{% endif %} {% if summary.rates.overall_freshness_seconds and summary.rates.overall_freshness_seconds > 300 %}text-red{% endif %}">
+            {{ '%.0fs' % summary.rates.overall_freshness_seconds if summary.rates.overall_freshness_seconds is not none else 'N/A' }}
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-label">OS Search Latency</div>
+          <div class="card-value {% if summary.rates.os_search_latency_ms and summary.rates.os_search_latency_ms > 500 %}text-yellow{% endif %}">
+            {{ '%.0fms' % summary.rates.os_search_latency_ms if summary.rates.os_search_latency_ms else 'N/A' }}
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-label">DP Buffer Usage</div>
+          <div class="card-value {% if summary.rates.dp_buffer_usage_ratio and summary.rates.dp_buffer_usage_ratio > 0.7 %}text-yellow{% endif %}">
+            {{ '%.0f%%' % (summary.rates.dp_buffer_usage_ratio * 100) if summary.rates.dp_buffer_usage_ratio is not none else 'N/A' }}
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-label">Worst Sensor Age</div>
+          <div class="card-value">
+            {{ summary.rates.worst_sensor_name or 'N/A' }}:
+            {{ '%.0fs' % summary.rates.worst_sensor_freshness_seconds if summary.rates.worst_sensor_freshness_seconds else '' }}
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Component cards -->
+    <section class="section">
+      <h2>Components</h2>
+      <div class="card-grid">
+        {% for comp in summary.components %}
+        <a href="/components/{{ comp.name.value }}" class="card card-component card-status-{{ comp.status.value }}">
+          <div class="card-label">{{ comp.name.value | upper }}</div>
+          <div class="badge badge-{{ comp.status.value }}">{{ comp.status.value | upper }}</div>
+          <div class="card-summary">{{ comp.summary }}</div>
+        </a>
+        {% endfor %}
+      </div>
+    </section>
+
+    <!-- Sensor cards -->
+    <section class="section">
+      <h2>Sensors</h2>
+      <div class="card-grid">
+        {% for sen in summary.sensors %}
+        <a href="/sensors/{{ sen.sensor_ip }}" class="card card-component card-status-{{ sen.status.value }}">
+          <div class="card-label">{{ sen.display_name }}</div>
+          <div class="badge badge-{{ sen.status.value }}">{{ sen.status.value | upper }}</div>
+          <div class="card-summary">{{ sen.sensor_ip }}</div>
+          <div class="card-summary">{{ sen.checks | length }} checks</div>
+        </a>
+        {% endfor %}
+      </div>
+    </section>
+
+    <!-- Config -->
+    <section class="section">
+      <h2>Configuration</h2>
+      <div class="card-grid">
+        <div class="card">
+          <div class="card-label">Config Fingerprint</div>
+          <div class="card-value mono">{{ summary.config_fingerprint }}</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Version</div>
+          <div class="card-value">{{ summary.version }}</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Total Checks</div>
+          <div class="card-value">{{ summary.checks | length }}</div>
+        </div>
+      </div>
+    </section>
+  </div>
+  {% endif %}
+
+  <footer class="footer">
+    NDR Pipeline Validator &mdash; <a href="/docs">API Docs</a> &mdash; <a href="/metrics">Prometheus Metrics</a> &mdash; <a href="/history">History</a>
+  </footer>
+  <script src="/static/app.js"></script>
+</body>
+</html>
