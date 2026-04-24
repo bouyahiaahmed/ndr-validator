@@ -102,6 +102,11 @@ class Settings(BaseSettings):
     CRITICAL_STALE_DATA_THRESHOLD_SECONDS: int = 300
     MAX_VECTOR_TO_DP_DROP_PERCENT: float = 5.0
     MAX_DP_TO_OS_DROP_PERCENT: float = 5.0
+    # When OPENSEARCH_INDEX_PATTERN is narrowed (e.g. only conn/dns indices) but
+    # Data Prepper metrics cover all pipelines, set this to the broader pattern
+    # used for drop-rate correlation so the scopes match. Leave empty to auto-detect
+    # scope mismatch and emit UNKNOWN instead of a false drop-rate RED.
+    DP_TO_OS_CORRELATION_INDEX_PATTERN: str = ""
     MAX_DP_PIPELINE_LATENCY_SECONDS_WARN: float = 5.0
     MAX_DP_PIPELINE_LATENCY_SECONDS_CRIT: float = 30.0
     MAX_DP_BUFFER_USAGE_RATIO_WARN: float = 0.7

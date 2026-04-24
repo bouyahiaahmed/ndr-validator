@@ -2,12 +2,13 @@
 Data Prepper checks – evaluate DP scrape results into CheckResults.
 """
 from __future__ import annotations
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from app.config import settings
 from app.models import CheckResult, Component, Status
 from app.collectors.dataprepper_collector import DataPrepperScrapeResult
 
 C = Component.DATAPREPPER
+
 
 def run_dataprepper_checks(
     scrape: DataPrepperScrapeResult,
@@ -22,7 +23,7 @@ def run_dataprepper_checks(
         component=C, severity="critical",
         status=Status.GREEN if scrape.metrics_reachable else Status.RED,
         details=scrape.metrics_error or "Reachable",
-        remediation="Verify Data Prepper is running and management port 4900 is accessible.",
+        remediation="Verify Data Prepper is running and management port 4900 is accessible with metricRegistries: [Prometheus].",
     ))
     # 2. TLS ok
     if scrape.metrics_reachable:
@@ -52,14 +53,33 @@ def run_dataprepper_checks(
         severity="critical", status=Status.GREEN if parse_ok else Status.RED,
         details="Parsed OK" if parse_ok else (scrape.metrics_error or "Parse failed"),
     ))
+
     # 5. Ingest health
-    checks.append(CheckResult(
-        id="dp.ingest.reachable", title="Data Prepper ingest health",
-        component=C, severity="critical",
-        status=Status.GREEN if scrape.ingest_healthy else (Status.YELLOW if scrape.ingest_reachable else Status.RED),
-        details="Healthy" if scrape.ingest_healthy else (scrape.ingest_error or "Unhealthy"),
-        remediation="Check Data Prepper ingest port 2021 and health_check_service config.",
-    ))
+    if scrape.ingest_health_404:
+        # /health returned 404: health_check_service may not expose this path.
+        # Metrics and ingestion are working, so this is a yellow configuration note.
+        checks.append(CheckResult(
+            id="dp.ingest.reachable", title="Data Prepper ingest health",
+            component=C, severity="warning", status=Status.YELLOW,
+            details=(
+                "Health endpoint returned 404 – health_check_service may not expose "
+                f"'{settings.DATAPREPPER_HEALTH_PATH}'. Metrics and ingestion appear healthy."
+            ),
+            remediation=(
+                "Add health_check_service to your Data Prepper pipeline config, or "
+                "set DATAPREPPER_HEALTH_PATH to the correct path."
+            ),
+        ))
+    else:
+        checks.append(CheckResult(
+            id="dp.ingest.reachable", title="Data Prepper ingest health",
+            component=C, severity="critical",
+            status=Status.GREEN if scrape.ingest_healthy else (
+                Status.YELLOW if scrape.ingest_reachable else Status.RED),
+            details="Healthy" if scrape.ingest_healthy else (scrape.ingest_error or "Unhealthy"),
+            remediation="Check Data Prepper ingest port 2021 and health_check_service config.",
+        ))
+
     # 6. Pipeline discovered
     checks.append(CheckResult(
         id="dp.pipelines.discovered", title="Data Prepper pipelines discovered",
@@ -69,7 +89,7 @@ def run_dataprepper_checks(
         details=f"Pipelines: {', '.join(scrape.pipeline_names) or 'none found'}",
     ))
 
-    # Delta-based checks
+    # Delta helper
     def _delta(key):
         return scrape.__dict__.get(key, 0) - p.get(key, scrape.__dict__.get(key, 0))
 
@@ -128,16 +148,30 @@ def run_dataprepper_checks(
         details=f"Bulk failure delta: {bf_d:.0f}",
         remediation="Check OpenSearch cluster health and disk space." if bf_d > t2 else "",
     ))
-    # 13. Pipeline latency
-    lat = scrape.os_pipeline_latency
-    checks.append(CheckResult(
-        id="dp.pipeline.latency", title="Data Prepper pipeline latency",
-        component=C, severity="warning",
-        status=Status.GREEN if lat < settings.MAX_DP_PIPELINE_LATENCY_SECONDS_WARN else (
-            Status.YELLOW if lat < settings.MAX_DP_PIPELINE_LATENCY_SECONDS_CRIT else Status.RED),
-        current_value=lat, threshold=settings.MAX_DP_PIPELINE_LATENCY_SECONDS_WARN,
-        details=f"Pipeline latency: {lat:.2f}s",
-    ))
+
+    # 13. Pipeline latency – safe interpretation
+    lat, lat_source = _compute_safe_latency(scrape, p)
+    if lat is None:
+        checks.append(CheckResult(
+            id="dp.pipeline.latency", title="Data Prepper pipeline latency",
+            component=C, severity="info", status=Status.UNKNOWN,
+            details=(
+                f"Pipeline latency not yet calculable ({lat_source}). "
+                "This is normal on the first scrape cycle; will compute on next cycle."
+            ),
+        ))
+    else:
+        s = Status.GREEN if lat < settings.MAX_DP_PIPELINE_LATENCY_SECONDS_WARN else (
+            Status.YELLOW if lat < settings.MAX_DP_PIPELINE_LATENCY_SECONDS_CRIT else Status.RED)
+        checks.append(CheckResult(
+            id="dp.pipeline.latency", title="Data Prepper pipeline latency",
+            component=C, severity="warning", status=s,
+            current_value=round(lat, 3),
+            threshold=settings.MAX_DP_PIPELINE_LATENCY_SECONDS_WARN,
+            details=f"Pipeline latency: {lat:.3f}s (source: {lat_source})",
+            remediation="Check OpenSearch sink throughput and buffer pressure." if s != Status.GREEN else "",
+        ))
+
     # 14. Buffer usage
     bu = scrape.buffer_usage
     checks.append(CheckResult(
@@ -192,3 +226,35 @@ def run_dataprepper_checks(
         ))
 
     return checks
+
+
+def _compute_safe_latency(
+    scrape: DataPrepperScrapeResult,
+    p: Dict[str, float],
+) -> Tuple[Optional[float], str]:
+    """Return (latency_seconds, source_description) or (None, reason).
+
+    Priority:
+    1. _max gauge  – rolling window reset per polling interval (semantically correct)
+    2. delta(sum) / delta(count) – average over last scrape interval
+    3. None – metric not available or not yet computable
+    """
+    # 1. Prefer _max (Micrometer Timer gauge, resets each poll)
+    if scrape.os_pipeline_latency_max >= 0:
+        return scrape.os_pipeline_latency_max, "max_per_polling_window"
+
+    # 2. Delta average
+    sum_now = scrape.os_pipeline_latency_sum
+    count_now = scrape.os_pipeline_latency_count
+    sum_prev = p.get("os_pipeline_latency_sum", sum_now)
+    count_prev = p.get("os_pipeline_latency_count", count_now)
+
+    sum_delta = sum_now - sum_prev
+    count_delta = count_now - count_prev
+
+    if count_delta > 0 and sum_delta >= 0:
+        avg = sum_delta / count_delta
+        return avg, f"delta_avg ({sum_delta:.3f}s / {count_delta:.0f} obs)"
+
+    # 3. Not yet available
+    return None, "awaiting_second_scrape_cycle"

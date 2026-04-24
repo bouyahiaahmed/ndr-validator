@@ -247,7 +247,69 @@ curl -s "http://localhost:8000/history?limit=10" | jq '[.[] | {timestamp, overal
 
 ---
 
-## Certificate Mounting
+## Data Prepper Management Metrics
+
+The validator scrapes Data Prepper's internal metrics (pipeline throughput, buffer usage,
+latency, error counters) from the **management server**, which runs on a **separate port** from
+the ingest endpoint.
+
+### Port mapping
+
+| Port | Purpose |
+|------|---------|
+| `2021` | Ingest (receives logs from Vector via HTTP/TLS) |
+| `4900` | Management metrics (Prometheus scrape endpoint) |
+
+> **Important**: Both ports must be exposed in your central-stack `docker-compose.yml`. The validator
+> **cannot validate Data Prepper internals** if port 4900 is not reachable.
+
+### Required central-stack docker-compose ports
+
+```yaml
+services:
+  ndr-dataprepper:
+    # ...
+    ports:
+      - "2021:2021"   # ingest
+      - "4900:4900"   # management metrics
+```
+
+### Required data-prepper-config.yaml
+
+```yaml
+ssl: true
+serverPort: 4900
+metricRegistries:
+  - Prometheus
+authentication:
+  http_basic:
+    username: admin
+    password: admin
+```
+
+### Validator .env settings
+
+```dotenv
+DATAPREPPER_HOST=<central-host>
+DATAPREPPER_METRICS_SCHEME=https
+DATAPREPPER_METRICS_PORT=4900
+DATAPREPPER_METRICS_PATH=/metrics/sys
+DATAPREPPER_USERNAME=admin
+DATAPREPPER_PASSWORD=<password>
+
+DATAPREPPER_INGEST_SCHEME=https
+DATAPREPPER_INGEST_PORT=2021
+DATAPREPPER_HEALTH_PATH=/health
+DATAPREPPER_INGEST_USERNAME=<vector-user>
+DATAPREPPER_INGEST_PASSWORD=<vector-password>
+```
+
+> **Health endpoint note**: If Data Prepper does not expose `/health` via `health_check_service`
+> in the pipeline config, the validator will report the health check as YELLOW (not RED) and
+> explain that the path is not exposed. Metrics and ingestion checks are unaffected.
+
+---
+
 
 Your CA cert must be mounted into the container at `/certs/ca/ca.crt`.
 

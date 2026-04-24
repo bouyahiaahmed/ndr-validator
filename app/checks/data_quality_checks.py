@@ -7,6 +7,7 @@ from typing import Dict, List, Optional
 from app.config import settings
 from app.models import CheckResult, Component, Status
 from app.collectors.opensearch_collector import OpenSearchScrapeResult
+from app.utils.field_utils import get_field
 
 logger = logging.getLogger(__name__)
 C = Component.DATA_QUALITY
@@ -81,7 +82,7 @@ def run_data_quality_checks(scrape: OpenSearchScrapeResult) -> List[CheckResult]
                 null_count = 0
                 for h in hits:
                     src = h.get("_source", {})
-                    val = _deep_get(src, rf)
+                    val = get_field(src, rf)
                     if val is None or val == "":
                         null_count += 1
                 pct_ok = (len(hits) - null_count) / len(hits) * 100 if hits else 0
@@ -126,14 +127,3 @@ def run_data_quality_checks(scrape: OpenSearchScrapeResult) -> List[CheckResult]
 
 def _safe_id(field: str) -> str:
     return field.replace(".", "_").replace("@", "at_").replace("-", "_")
-
-
-def _deep_get(d: dict, dotted_key: str):
-    """Get a value from a nested dict using dotted key notation."""
-    keys = dotted_key.split(".")
-    cur = d
-    for k in keys:
-        if not isinstance(cur, dict):
-            return None
-        cur = cur.get(k)
-    return cur

@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 from app.config import settings
 from app.utils.opensearch import (
     cluster_health, cat_nodes, cat_indices, cat_count,
-    node_stats, cluster_stats, field_caps, search_recent,
+    node_stats, cluster_stats, field_caps, search_recent, search_latest,
     count_recent, aggs_by_field, latest_timestamp_per_field,
 )
 
@@ -75,13 +75,17 @@ async def scrape_opensearch() -> OpenSearchScrapeResult:
     # Field caps for required fields
     fc_data, _, _ = await field_caps(settings.required_fields_list)
     result.field_caps_data = fc_data
-    # Recent search
+    # Recent search (for data quality sampling – last 5 minutes)
     recent, s_lat, _ = await search_recent(size=5, time_range_seconds=300)
     result.recent_docs = recent
     result.search_latency_ms = s_lat
     if recent and "hits" in recent:
         result.recent_count = recent["hits"].get("total", {}).get("value", 0)
-        hits = recent["hits"].get("hits", [])
+    # Overall latest timestamp – use search_latest (no time-range filter) so
+    # stale data is correctly reported even when all docs are >300s old.
+    latest, _, _ = await search_latest()
+    if latest and "hits" in latest:
+        hits = latest["hits"].get("hits", [])
         if hits:
             result.overall_latest_ts = hits[0].get("_source", {}).get(settings.OPENSEARCH_TIMESTAMP_FIELD)
     # Sensor freshness

@@ -123,17 +123,38 @@ def run_correlation_checks(
         os_count_delta = os_result.total_count - po.get("total_count", os_result.total_count)
 
         if dp_os_in_delta > 0 and os_count_delta >= 0:
-            drop_pct = max(0, (dp_os_in_delta - os_count_delta) / dp_os_in_delta * 100)
-            t = settings.MAX_DP_TO_OS_DROP_PERCENT
-            s = Status.GREEN if drop_pct <= t else (Status.YELLOW if drop_pct <= t * 3 else Status.RED)
-            checks.append(CheckResult(
-                id="corr.dp_os.drop_rate",
-                title="DataPrepper→OpenSearch drop rate",
-                component=C, severity="critical", status=s,
-                current_value=round(drop_pct, 2), threshold=t,
-                details=f"Estimated drop: {drop_pct:.1f}% (DP sent Δ={dp_os_in_delta:.0f}, OS docs Δ={os_count_delta:.0f})",
-                remediation="Check OpenSearch cluster health, disk space, and index mappings." if s != Status.GREEN else "",
-            ))
+            # Detect scope mismatch: DP metrics cover all pipelines/log types,
+            # but OPENSEARCH_INDEX_PATTERN may be narrowed to specific log types.
+            # A comma-separated pattern (e.g. zeek-conn-*,zeek-dns-*) but NOT a
+            # broad wildcard (e.g. zeek-*) means the OS count only covers a subset.
+            scope_ok = _dp_os_scopes_match()
+            if not scope_ok:
+                checks.append(CheckResult(
+                    id="corr.dp_os.drop_rate",
+                    title="DataPrepper→OpenSearch drop rate",
+                    component=C, severity="warning", status=Status.UNKNOWN,
+                    details=(
+                        "Drop rate check skipped: Data Prepper metrics cover all pipeline log types "
+                        "but OPENSEARCH_INDEX_PATTERN is narrowed to specific indices. "
+                        "Set DP_TO_OS_CORRELATION_INDEX_PATTERN to the full pattern (e.g. zeek-*) "
+                        "to enable this check."
+                    ),
+                    remediation=(
+                        "Add DP_TO_OS_CORRELATION_INDEX_PATTERN=zeek-* (or matching scope) to .env."
+                    ),
+                ))
+            else:
+                drop_pct = max(0, (dp_os_in_delta - os_count_delta) / dp_os_in_delta * 100)
+                t = settings.MAX_DP_TO_OS_DROP_PERCENT
+                s = Status.GREEN if drop_pct <= t else (Status.YELLOW if drop_pct <= t * 3 else Status.RED)
+                checks.append(CheckResult(
+                    id="corr.dp_os.drop_rate",
+                    title="DataPrepper→OpenSearch drop rate",
+                    component=C, severity="critical", status=s,
+                    current_value=round(drop_pct, 2), threshold=t,
+                    details=f"Estimated drop: {drop_pct:.1f}% (DP sent Δ={dp_os_in_delta:.0f}, OS docs Δ={os_count_delta:.0f})",
+                    remediation="Check OpenSearch cluster health, disk space, and index mappings." if s != Status.GREEN else "",
+                ))
 
         # Indexing stall: OS reachable, DP sending, but OS not growing
         if dp_os_in_delta > 100 and os_count_delta == 0:
@@ -283,3 +304,29 @@ def run_correlation_checks(
             ))
 
     return checks
+
+
+def _dp_os_scopes_match() -> bool:
+    """Return True when the OpenSearch query scope is compatible with DP metrics scope.
+
+    If DP_TO_OS_CORRELATION_INDEX_PATTERN is set it represents the user's explicit
+    confirmation that the scope aligns with what Data Prepper counts, so we trust it.
+
+    Otherwise we apply a heuristic: if OPENSEARCH_INDEX_PATTERN contains multiple
+    comma-separated patterns (narrowed subset), it likely under-counts compared to
+    DP metrics which cover all log types.  A single wildcard pattern (e.g. zeek-*)
+    is assumed to cover all log types.
+    """
+    corr_pattern = (settings.DP_TO_OS_CORRELATION_INDEX_PATTERN or "").strip()
+    if corr_pattern:
+        # User has explicitly configured a correlation pattern – trust it.
+        return True
+
+    os_pattern = (settings.OPENSEARCH_INDEX_PATTERN or "").strip()
+    # If the OS pattern is a single wildcard covering all log types (e.g. zeek-*),
+    # the scopes likely match.
+    if "," not in os_pattern:
+        return True
+
+    # Multiple comma-separated patterns – likely a narrowed subset.
+    return False

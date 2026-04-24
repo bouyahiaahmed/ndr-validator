@@ -1,6 +1,6 @@
 """
 Vector metrics collector – scrapes Prometheus metrics from each sensor's Vector instance.
-Supports both current and legacy metric name families via alias mapping.
+Supports current (component_*), vector_-prefixed current, and legacy metric name families.
 """
 from __future__ import annotations
 
@@ -19,27 +19,38 @@ from app.utils.prometheus_parser import (
 
 logger = logging.getLogger(__name__)
 
-# ── Metric alias mapping ────────────────────────────────────────────────
-# Maps legacy metric names → canonical (current) names.
-VECTOR_METRIC_ALIASES: Dict[str, str] = {
-    "events_in_total": "component_received_events_total",
-    "events_out_total": "component_sent_events_total",
-    "processing_errors_total": "component_errors_total",
-}
-
-CANONICAL_METRICS = [
+# ── Metric name sets ────────────────────────────────────────────────────────
+# Current canonical names (without vector_ prefix)
+_CANONICAL = [
     "component_received_events_total",
     "component_sent_events_total",
     "component_errors_total",
     "component_received_bytes_total",
     "component_sent_bytes_total",
 ]
+# vector_-prefixed variant (Vector ≥ 0.37 ships these)
+_VECTOR_PREFIXED = [f"vector_{m}" for m in _CANONICAL]
 
-LEGACY_METRICS = [
+# Legacy names (Vector < 0.21)
+_LEGACY = [
     "events_in_total",
     "events_out_total",
     "processing_errors_total",
 ]
+
+# Alias map: any name on the left is treated as the canonical name on the right
+VECTOR_METRIC_ALIASES: Dict[str, str] = {
+    # vector_-prefixed → canonical
+    "vector_component_received_events_total": "component_received_events_total",
+    "vector_component_sent_events_total": "component_sent_events_total",
+    "vector_component_errors_total": "component_errors_total",
+    "vector_component_received_bytes_total": "component_received_bytes_total",
+    "vector_component_sent_bytes_total": "component_sent_bytes_total",
+    # legacy → canonical
+    "events_in_total": "component_received_events_total",
+    "events_out_total": "component_sent_events_total",
+    "processing_errors_total": "component_errors_total",
+}
 
 
 class VectorScrapeResult:
@@ -68,7 +79,7 @@ class VectorScrapeResult:
         self.latency_ms: float = 0.0
         self.families: Dict[str, MetricFamily] = {}
         self.raw_text: str = ""
-        self.metric_version: str = "unknown"  # "current", "legacy", "unknown"
+        self.metric_version: str = "unknown"  # "current", "vector_prefixed", "legacy", "unknown"
         self.received_events: float = 0.0
         self.sent_events: float = 0.0
         self.errors_total: float = 0.0
@@ -98,68 +109,94 @@ async def scrape_vector(sensor_ip: str) -> VectorScrapeResult:
         result.error = f"parse_error: {e}"
         return result
 
-    # Detect metric version
     result.metric_version = _detect_metric_version(result.families)
 
-    # Extract canonical values with alias fallback
-    result.received_events = sum_metric_values(
-        result.families,
-        "component_received_events_total",
-        aliases=["events_in_total"],
+    # Extract source received events (component_kind=source) with all alias variants.
+    # Summing only source-kind samples avoids double-counting events that pass
+    # through transform and sink components.
+    source_filter = {"component_kind": "source"}
+    sink_filter = {"component_kind": "sink"}
+
+    result.received_events = (
+        _sum_with_aliases(result.families, "component_received_events_total",
+                          ["vector_component_received_events_total", "events_in_total"],
+                          source_filter)
+        # If no component_kind labels present (older Vector), fall back to summing all
+        or _sum_with_aliases(result.families, "component_received_events_total",
+                             ["vector_component_received_events_total", "events_in_total"])
     )
-    result.sent_events = sum_metric_values(
-        result.families,
-        "component_sent_events_total",
-        aliases=["events_out_total"],
+    result.sent_events = (
+        _sum_with_aliases(result.families, "component_sent_events_total",
+                          ["vector_component_sent_events_total", "events_out_total"],
+                          sink_filter)
+        or _sum_with_aliases(result.families, "component_sent_events_total",
+                             ["vector_component_sent_events_total", "events_out_total"])
     )
-    result.errors_total = sum_metric_values(
-        result.families,
-        "component_errors_total",
-        aliases=["processing_errors_total"],
+    result.errors_total = (
+        _sum_with_aliases(result.families, "component_errors_total",
+                          ["vector_component_errors_total", "processing_errors_total"],
+                          sink_filter)
+        or _sum_with_aliases(result.families, "component_errors_total",
+                             ["vector_component_errors_total", "processing_errors_total"])
     )
-    result.received_bytes = sum_metric_values(
-        result.families, "component_received_bytes_total"
+    result.received_bytes = _sum_with_aliases(
+        result.families, "component_received_bytes_total",
+        ["vector_component_received_bytes_total"], source_filter,
+    ) or _sum_with_aliases(
+        result.families, "component_received_bytes_total",
+        ["vector_component_received_bytes_total"],
     )
-    result.sent_bytes = sum_metric_values(
-        result.families, "component_sent_bytes_total"
+    result.sent_bytes = _sum_with_aliases(
+        result.families, "component_sent_bytes_total",
+        ["vector_component_sent_bytes_total"], sink_filter,
+    ) or _sum_with_aliases(
+        result.families, "component_sent_bytes_total",
+        ["vector_component_sent_bytes_total"],
     )
 
-    # Discover per-component metrics
     result.components = _extract_components(result.families, result.metric_version)
-
     return result
 
 
+def _sum_with_aliases(
+    families: Dict[str, MetricFamily],
+    primary: str,
+    aliases: List[str],
+    label_filters: Optional[Dict[str, str]] = None,
+) -> float:
+    """Sum metric values trying primary name first, then aliases."""
+    return sum_metric_values(families, primary, label_filters=label_filters, aliases=aliases)
+
+
 def _detect_metric_version(families: Dict[str, MetricFamily]) -> str:
-    """Detect whether metrics are current or legacy."""
-    family_names = set(families.keys())
-    has_current = any(m in family_names or f"{m}" in family_names for m in CANONICAL_METRICS)
-    has_legacy = any(m in family_names for m in LEGACY_METRICS)
-
-    # Also check sample names
+    """Classify metrics as current, vector_prefixed, legacy, or unknown."""
+    names: set = set()
     for fam in families.values():
+        names.add(fam.name)
         for s in fam.samples:
-            if s.name in CANONICAL_METRICS or s.name.replace("_total", "") + "_total" in CANONICAL_METRICS:
-                has_current = True
-            if s.name in LEGACY_METRICS:
-                has_legacy = True
+            names.add(s.name)
 
-    if has_current and not has_legacy:
+    has_vector_prefix = any(n in names for n in _VECTOR_PREFIXED)
+    has_canonical = any(n in names for n in _CANONICAL)
+    has_legacy = any(n in names for n in _LEGACY)
+
+    if has_vector_prefix:
+        return "vector_prefixed"   # Vector ≥ 0.37 default
+    if has_canonical and not has_legacy:
         return "current"
-    if has_legacy and not has_current:
+    if has_legacy and not has_canonical:
         return "legacy"
-    if has_current and has_legacy:
-        return "current"  # Prefer current when both present
+    if has_canonical and has_legacy:
+        return "current"
     return "unknown"
 
 
 def _extract_components(
-    families: Dict[str, MetricFamily], version: str
+    families: Dict[str, MetricFamily],
+    version: str,
 ) -> Dict[str, Dict[str, Any]]:
-    """Extract per-component metrics from Vector families."""
+    """Extract per-component metrics keyed by component_id."""
     components: Dict[str, Dict[str, Any]] = {}
-    label_key = "component_id" if version == "current" else "component_id"
-
     for fam in families.values():
         for sample in fam.samples:
             comp_id = sample.labels.get("component_id") or sample.labels.get("component_name", "")
@@ -172,14 +209,12 @@ def _extract_components(
                     "metrics": {},
                 }
             components[comp_id]["metrics"][sample.name] = sample.value
-
     return components
 
 
 async def scrape_all_sensors() -> List[VectorScrapeResult]:
     """Scrape Vector metrics from all configured sensors."""
     import asyncio
-
     tasks = [scrape_vector(ip) for ip in settings.sensor_ips]
     if not tasks:
         return []

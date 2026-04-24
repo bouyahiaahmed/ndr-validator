@@ -63,18 +63,44 @@ def run_opensearch_checks(
         ))
         # 6. Active shards percent
         asp = scrape.cluster.get("active_shards_percent_as_number", 0)
+        unassigned = scrape.cluster.get("unassigned_shards", 0)
+        active_primary = scrape.cluster.get("active_primary_shards", -1)
+        # Single-node clusters cannot assign replica shards; this is expected.
+        # Only escalate to RED if primary shards are unassigned.
+        single_node_replica_issue = (
+            n_nodes == 1
+            and unassigned > 0
+            and active_primary > 0  # primaries ARE assigned, only replicas aren't
+        )
+        if single_node_replica_issue:
+            shard_status = Status.YELLOW
+            shard_detail = (
+                f"Active shards: {asp:.1f}% – single-node cluster has "
+                f"{unassigned} unassigned replica shard(s) (expected)."
+            )
+            shard_remediation = (
+                "Single-node lab: run 'PUT zeek-*/_settings {\"number_of_replicas\": 0}' "
+                "to resolve replica assignment and reach 100% active shards."
+            )
+        else:
+            shard_status = Status.GREEN if asp >= 100 else (
+                Status.YELLOW if asp >= 80 else Status.RED)
+            shard_detail = f"Active shards: {asp:.1f}%"
+            shard_remediation = "Check unassigned shards and node availability." if shard_status != Status.GREEN else ""
         checks.append(CheckResult(
             id="os.cluster.active_shards", title="OpenSearch active shards %", component=C,
-            severity="warning",
-            status=Status.GREEN if asp >= 100 else (Status.YELLOW if asp >= 80 else Status.RED),
-            current_value=asp, details=f"Active shards: {asp:.1f}%",
+            severity="warning", status=shard_status,
+            current_value=asp, details=shard_detail,
+            remediation=shard_remediation,
         ))
         # 7. Unassigned shards
         us = scrape.cluster.get("unassigned_shards", 0)
         checks.append(CheckResult(
             id="os.cluster.unassigned", title="OpenSearch unassigned shards", component=C,
-            severity="warning", status=Status.GREEN if us == 0 else Status.YELLOW,
+            severity="warning",
+            status=Status.GREEN if us == 0 else (Status.YELLOW if single_node_replica_issue else Status.YELLOW),
             current_value=us, details=f"Unassigned shards: {us}",
+            remediation=shard_remediation if us > 0 else "",
         ))
 
     # 8. Node heap/disk
