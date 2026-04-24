@@ -1,0 +1,10 @@
+
+# Local runtime config and secrets
+.env
+certs/
+secrets/
+data/
+*.db
+*.sqlite
+*.log
+*.txt
