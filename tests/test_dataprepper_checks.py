@@ -16,12 +16,18 @@ def _base_healthy() -> DataPrepperScrapeResult:
     r.ingest_reachable = True
     r.ingest_healthy = True
     r.pipeline_names = ["zeek_ingestion_pipeline"]
+    # families must be non-empty so dp.metrics.parse is GREEN
+    from app.utils.prometheus_parser import MetricFamily
+    r.families = {"_dummy": MetricFamily(name="_dummy", type="counter")}
     r.records_processed = 1000.0
     r.http_requests_received = 500.0
     r.http_success_requests = 498.0
     r.os_records_in = 999.0
     r.os_document_errors = 0.0
     r.os_bulk_request_failed = 0.0
+    # Use os_pipeline_latency_max (the field _compute_safe_latency reads first).
+    # A non-negative value is returned directly as the latency reading.
+    r.os_pipeline_latency_max = 0.5
     r.os_pipeline_latency = 0.5
     r.buffer_usage = 0.1
     r.buffer_write_failed = 0.0
@@ -92,7 +98,7 @@ def test_tls_handshake_failures_red():
     r.tls_handshake_failure = 3.0
     prev = {"tls_handshake_failure": 0.0}
     checks = run_dataprepper_checks(r, prev)
-    tf = next(c for c in checks if "tls_handshake" in c.id)
+    tf = next(c for c in checks if "tls.handshake" in c.id)
     assert tf.status == Status.RED
 
 
@@ -105,20 +111,48 @@ def test_high_buffer_usage_yellow():
 
 
 def test_pipeline_latency_high_red():
+    """
+    _compute_safe_latency reads os_pipeline_latency_max first (rolling window).
+    Setting it to 35.0 s (above the CRIT threshold of 30 s) must produce RED.
+    """
     r = _base_healthy()
+    r.os_pipeline_latency_max = 35.0  # _compute_safe_latency returns this directly
     r.os_pipeline_latency = 35.0
     checks = run_dataprepper_checks(r, {})
     lat = next(c for c in checks if c.id == "dp.pipeline.latency")
-    assert lat.status == Status.RED
+    assert lat.status == Status.RED, (
+        f"Latency 35s must be RED, got {lat.status}: {lat.details}"
+    )
 
 
 def test_ingest_unhealthy_red():
+    """
+    Status is YELLOW when ingest_reachable=True but unhealthy (pipeline error).
+    Status is RED only when ingest_reachable=False (port unreachable).
+    This tests the RED path: port completely unreachable.
+    """
     r = _base_healthy()
+    r.ingest_reachable = False   # port unreachable → RED
     r.ingest_healthy = False
     r.ingest_error = "connection_refused"
     checks = run_dataprepper_checks(r, {})
     ih = next(c for c in checks if c.id == "dp.ingest.reachable")
-    assert ih.status == Status.RED
+    assert ih.status == Status.RED, (
+        f"Port-unreachable ingest must be RED, got {ih.status}: {ih.details}"
+    )
+
+
+def test_ingest_reachable_but_unhealthy_is_yellow():
+    """Reachable port but unhealthy response → YELLOW (pipeline error, not full outage)."""
+    r = _base_healthy()
+    r.ingest_reachable = True    # port open
+    r.ingest_healthy = False
+    r.ingest_error = "pipeline_error"
+    checks = run_dataprepper_checks(r, {})
+    ih = next(c for c in checks if c.id == "dp.ingest.reachable")
+    assert ih.status == Status.YELLOW, (
+        f"Reachable-but-unhealthy ingest must be YELLOW, got {ih.status}: {ih.details}"
+    )
 
 
 def test_missing_dp_endpoint_first_check_red():

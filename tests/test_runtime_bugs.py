@@ -424,3 +424,25 @@ def test_worst_unknown_green_gives_green():
 
 def test_worst_unknown_unknown_gives_unknown():
     assert St.worst(St.UNKNOWN, St.UNKNOWN) == St.UNKNOWN
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Smoke · app.main imports without SyntaxError or NameError
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_app_imports():
+    """
+    Guard against import-time SyntaxError / NameError in app.main and all
+    modules it pulls in (routes_status, routes_checks, models, config …).
+    If this test passes, Uvicorn / Docker will also be able to start.
+    """
+    from app.main import app  # noqa: F401
+    assert app is not None, "FastAPI app object must not be None after import"
+
+
+def test_routes_status_imports():
+    """Specifically guard the module that contained the SyntaxError."""
+    import importlib
+    mod = importlib.import_module("app.api.routes_status")
+    assert hasattr(mod, "router"), "routes_status must expose a 'router'"
+

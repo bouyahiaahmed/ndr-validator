@@ -69,15 +69,26 @@ def test_all_healthy_no_red():
 
 
 def test_vector_dp_drop_rate_red():
-    vecs = [_vec("10.0.0.11", sent=10000.0)]
-    dp = _dp(records=3000.0)
+    """
+    Vector sends 9000 events to DP sink (10000 - 1000 prev), but DP only processed 2700 → ~70% drop.
+    The check must be YELLOW or RED (not UNKNOWN).
+    """
+    vr = _vec("10.0.0.11", sent=10000.0)
+    vr.dp_sink_sent_events = 10000.0
+    vr.dp_sink_ambiguous = False
+    vr.detected_dp_sink_ids = ["dp_ingest"]
+    vr.excluded_sink_ids = []
+    vr.discarded_events = 0.0
+    vr.source_received_events = 10000.0
+
+    dp = _dp(records=2700.0)
     os = _os()
-    prev_v = {"10.0.0.11": {"sent_events": 0.0}}
+    prev_v = {"10.0.0.11": {"dp_sink_sent_events": 1000.0}}
     prev_dp = {"records_processed": 0.0, "os_records_in": 0.0,
                "tls_handshake_failure": 0.0, "buffer_write_failed": 0.0,
                "os_bulk_request_failed": 0.0, "http_success_requests": 0.0}
     prev_os = {"total_count": 0}
-    checks = run_correlation_checks(vecs, dp, os, [], prev_v, prev_dp, prev_os)
+    checks = run_correlation_checks([vr], dp, os, [], prev_v, prev_dp, prev_os)
     drop = next((c for c in checks if c.id == "corr.vector_dp.drop_rate"), None)
     assert drop is not None
     assert drop.status in (Status.YELLOW, Status.RED)

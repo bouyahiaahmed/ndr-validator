@@ -119,11 +119,10 @@ async def synthetic_check_workflow():
                 "step": 3,
                 "action": "Check freshness per sensor and log type",
                 "endpoint": "GET /status",
-                "check_ids": [
-                    f"freshness.sensor_liveness.<sensor_ip>",
-                    f"freshness.detection_coverage.{lt}"
-                    for lt in log_types
-                ],
+                "check_ids": (
+                    [f"freshness.sensor_liveness.{s}" for s in sensors]
+                    + [f"freshness.detection_coverage.{lt}" for lt in log_types]
+                ),
             },
             {
                 "step": 4,

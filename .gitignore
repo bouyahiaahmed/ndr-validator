@@ -8,3 +8,20 @@ data/
 *.sqlite
 *.log
 *.txt
+
+# Python local environment
+.venv/
+venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+
+# Runtime/local files
+.env
+certs/
+secrets/
+data/
+*.db
+*.sqlite
+*.log
+*.txt

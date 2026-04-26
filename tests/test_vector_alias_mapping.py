@@ -41,7 +41,7 @@ def test_alias_map_has_all_legacy_keys():
 
 def test_extract_components_current():
     families = parse_prometheus_text(CURRENT_PAYLOAD)
-    comps = _extract_components(families, "current")
+    comps = _extract_components(families)
     assert "src_zeek" in comps or "dp_sink" in comps
 
 
