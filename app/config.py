@@ -129,6 +129,21 @@ class Settings(BaseSettings):
     REQUIRED_FIELDS: str = "@timestamp,source.ip,destination.ip,network.protocol"
     ENABLE_DEBUG_INSECURE_SKIP_VERIFY: bool = False
 
+    # ── Freshness split ──────────────────────────────────────────────────
+    # Broad index pattern used only for sensor LIVENESS checks.
+    # A sensor is "alive" if ANY document in this pattern is fresh, regardless
+    # of which log type it is (conn, dns, dhcp, analyzer, ...).
+    # Default: zeek-* (covers all Zeek indices).
+    SENSOR_LIVENESS_INDEX_PATTERN: str = "zeek-*"
+    # Narrower index pattern used for DETECTION COVERAGE freshness checks.
+    # If empty, falls back to OPENSEARCH_INDEX_PATTERN.
+    DETECTION_FRESHNESS_INDEX_PATTERN: str = ""
+    # Comma-separated log types that MUST be continuously present.
+    # Stale entries in this list → RED (blocking).
+    # Stale entries NOT in this list → YELLOW (warning) only.
+    # Empty → all stale log types are warnings, never critical.
+    CONTINUOUS_REQUIRED_LOG_TYPES: str = ""
+
     # ── DLQ ───────────────────────────────────────────────────────────
     ENABLE_DP_DLQ_CHECK: bool = True
     DP_DLQ_GLOB: str = "/tmp/dp-dlq-*.log"
@@ -156,6 +171,18 @@ class Settings(BaseSettings):
     @property
     def required_log_types_list(self) -> List[str]:
         return [s.strip() for s in self.REQUIRED_LOG_TYPES.split(",") if s.strip()]
+
+    @property
+    def continuous_required_log_types_list(self) -> List[str]:
+        return [s.strip() for s in self.CONTINUOUS_REQUIRED_LOG_TYPES.split(",") if s.strip()]
+
+    @property
+    def sensor_liveness_pattern(self) -> str:
+        return self.SENSOR_LIVENESS_INDEX_PATTERN.strip() or "zeek-*"
+
+    @property
+    def detection_freshness_pattern(self) -> str:
+        return self.DETECTION_FRESHNESS_INDEX_PATTERN.strip() or self.OPENSEARCH_INDEX_PATTERN
 
     @property
     def required_fields_list(self) -> List[str]:

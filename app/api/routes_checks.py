@@ -1,31 +1,40 @@
-"""API routes: /checks, /checks/{id}"""
+"""API routes: /checks, /checks/actionable"""
 from __future__ import annotations
-from typing import Optional
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException
 from app.services.evaluator import get_latest_summary
+from app.models import Status
 
 router = APIRouter(tags=["Checks"])
 
 
 @router.get("/checks")
-async def get_checks(component: Optional[str] = None, status: Optional[str] = None):
+async def get_checks():
     s = get_latest_summary()
     if s is None:
         raise HTTPException(status_code=503, detail="No scrape data yet")
-    results = s.checks
-    if component:
-        results = [c for c in results if c.component.value == component]
-    if status:
-        results = [c for c in results if c.status.value == status]
-    return [c.model_dump() for c in results]
+    return [c.model_dump() for c in s.checks]
 
 
-@router.get("/checks/{check_id:path}")
-async def get_check(check_id: str):
+@router.get("/checks/actionable")
+async def get_actionable_checks():
+    """
+    Returns all red/yellow checks with their diagnosis field populated.
+    Sorted by severity (critical first) then status (red first).
+    This is the primary endpoint for 'what is broken and how to fix it'.
+    """
     s = get_latest_summary()
     if s is None:
         raise HTTPException(status_code=503, detail="No scrape data yet")
-    for c in s.checks:
-        if c.id == check_id:
-            return c.model_dump()
-    raise HTTPException(status_code=404, detail=f"Check '{check_id}' not found")
+
+    severity_order = {"critical": 0, "warning": 1, "info": 2}
+    status_order = {Status.RED: 0, Status.YELLOW: 1, Status.UNKNOWN: 2}
+
+    actionable = [
+        c for c in s.checks
+        if c.status in (Status.RED, Status.YELLOW, Status.UNKNOWN)
+    ]
+    actionable.sort(key=lambda c: (
+        status_order.get(c.status, 9),
+        severity_order.get(c.severity, 9),
+    ))
+    return [c.model_dump() for c in actionable]

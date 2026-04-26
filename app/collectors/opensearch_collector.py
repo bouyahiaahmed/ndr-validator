@@ -35,6 +35,11 @@ class OpenSearchScrapeResult:
         self.overall_latest_ts: Optional[str] = None
         self.sensors_present: List[str] = []
         self.log_types_present: List[str] = []
+        # Sensor liveness: freshness against SENSOR_LIVENESS_INDEX_PATTERN
+        # (may be the same as sensor_freshness when patterns match).
+        self.sensor_liveness_freshness: Dict[str, Optional[str]] = {}
+        # Doc count against DP_TO_OS_CORRELATION_INDEX_PATTERN (0 = not configured).
+        self.dp_corr_total_count: int = 0
 
 async def scrape_opensearch() -> OpenSearchScrapeResult:
     result = OpenSearchScrapeResult()
@@ -88,7 +93,7 @@ async def scrape_opensearch() -> OpenSearchScrapeResult:
         hits = latest["hits"].get("hits", [])
         if hits:
             result.overall_latest_ts = hits[0].get("_source", {}).get(settings.OPENSEARCH_TIMESTAMP_FIELD)
-    # Sensor freshness
+    # Sensor freshness (against OPENSEARCH_INDEX_PATTERN – used for detection coverage)
     sf_data, _, _ = await latest_timestamp_per_field(settings.OPENSEARCH_SENSOR_ID_FIELD)
     if sf_data and "aggregations" in sf_data:
         for bucket in sf_data["aggregations"].get("groups", {}).get("buckets", []):
@@ -104,10 +109,42 @@ async def scrape_opensearch() -> OpenSearchScrapeResult:
             ts_val = bucket.get("latest", {}).get("value_as_string")
             result.log_types_present.append(key)
             result.log_type_freshness[key] = ts_val
+
+    # Sensor LIVENESS freshness (against SENSOR_LIVENESS_INDEX_PATTERN)
+    liveness_pattern = settings.sensor_liveness_pattern
+    if liveness_pattern != settings.OPENSEARCH_INDEX_PATTERN:
+        # Run a separate aggregation against the broader liveness pattern
+        lv_data, _, _ = await latest_timestamp_per_field(
+            settings.OPENSEARCH_SENSOR_ID_FIELD,
+            index=liveness_pattern,
+        )
+    else:
+        # Patterns match – reuse the already-fetched data
+        lv_data = sf_data
+    if lv_data and "aggregations" in lv_data:
+        for bucket in lv_data["aggregations"].get("groups", {}).get("buckets", []):
+            key = bucket.get("key", "")
+            ts_val = bucket.get("latest", {}).get("value_as_string")
+            result.sensor_liveness_freshness[key] = ts_val
+
+    # DP→OS correlation count (against DP_TO_OS_CORRELATION_INDEX_PATTERN when configured)
+    corr_pattern = (settings.DP_TO_OS_CORRELATION_INDEX_PATTERN or "").strip()
+    if corr_pattern:
+        corr_cnt, _, _ = await cat_count(index=corr_pattern)
+        if isinstance(corr_cnt, list) and corr_cnt:
+            try:
+                result.dp_corr_total_count = int(corr_cnt[0].get("count", 0))
+            except (ValueError, TypeError):
+                pass
+
     return result
 
 def get_flat_metrics(result: OpenSearchScrapeResult) -> Dict[str, float]:
-    m: Dict[str, float] = {"total_count": float(result.total_count), "search_latency_ms": result.search_latency_ms}
+    m: Dict[str, float] = {
+        "total_count": float(result.total_count),
+        "search_latency_ms": result.search_latency_ms,
+        "dp_corr_total_count": float(result.dp_corr_total_count),
+    }
     if result.cluster:
         m["active_shards_percent"] = result.cluster.get("active_shards_percent_as_number", 0)
         m["unassigned_shards"] = result.cluster.get("unassigned_shards", 0)

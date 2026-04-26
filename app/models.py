@@ -11,6 +11,17 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 
+# ── Fix-location taxonomy ───────────────────────────────────────────────────
+# Canonical strings for the fix_location field in Diagnosis.
+FIX_ANSIBLE_ZEEK   = "ansible-config / Zeek"
+FIX_ANSIBLE_VECTOR = "ansible-config / Vector"
+FIX_DP             = "central-vm / Data Prepper"
+FIX_OS             = "central-vm / OpenSearch"
+FIX_DASHBOARDS     = "central-vm / Dashboards"
+FIX_VALIDATOR      = "validator config"
+FIX_TRAFFIC        = "traffic / lab environment"
+
+
 class Status(str, enum.Enum):
     GREEN = "green"
     YELLOW = "yellow"
@@ -35,6 +46,35 @@ class Component(str, enum.Enum):
     DATA_QUALITY = "data_quality"
 
 
+class Diagnosis(BaseModel):
+    """Actionable diagnosis attached to every non-green check."""
+
+    problem: str = ""
+    evidence: str = ""
+    impact: str = ""
+    probable_causes: List[str] = Field(default_factory=list)
+    next_steps: List[str] = Field(default_factory=list)
+    fix_location: str = ""   # one of the FIX_* constants above
+    confidence: str = "medium"  # low | medium | high
+
+
+class ReadinessLevel(str, enum.Enum):
+    NOT_READY             = "not_ready"
+    LAB_READY             = "lab_ready"
+    PRODUCTION_CANDIDATE  = "production_candidate"
+    PRODUCTION_READY      = "production_ready"
+
+
+class ProductionReadiness(BaseModel):
+    """Production-readiness score and classification."""
+
+    score: int = 0
+    readiness_level: ReadinessLevel = ReadinessLevel.NOT_READY
+    blocking_issues: List[str] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+    passed_checks: List[str] = Field(default_factory=list)
+
+
 class CheckResult(BaseModel):
     """Outcome of a single validation check."""
 
@@ -50,6 +90,7 @@ class CheckResult(BaseModel):
     remediation: str = ""
     sensor: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    diagnosis: Optional[Diagnosis] = None
 
 
 class ComponentStatus(BaseModel):
@@ -117,6 +158,7 @@ class StatusSummary(BaseModel):
     checks: List[CheckResult] = Field(default_factory=list)
     urgent_findings: List[UrgentFinding] = Field(default_factory=list)
     rates: PipelineRates = Field(default_factory=PipelineRates)
+    readiness: ProductionReadiness = Field(default_factory=ProductionReadiness)
 
 
 class HistoryRecord(BaseModel):

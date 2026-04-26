@@ -7,7 +7,10 @@ from __future__ import annotations
 import logging
 from typing import Dict, List, Optional
 from app.config import settings
-from app.models import CheckResult, Component, Status
+from app.models import (
+    CheckResult, Component, Diagnosis, Status,
+    FIX_ANSIBLE_VECTOR, FIX_DP, FIX_OS, FIX_VALIDATOR,
+)
 from app.utils.time import parse_iso_timestamp, seconds_ago
 
 logger = logging.getLogger(__name__)
@@ -49,6 +52,23 @@ def run_correlation_checks(
                     component=C, severity="critical", sensor=zr.sensor_ip, status=Status.RED,
                     details="Zeek logs are fresh but Vector shows no outbound movement",
                     remediation="Check Vector file source paths match ZEEK_LOG_DIR. Verify Vector service and sink config.",
+                    diagnosis=Diagnosis(
+                        problem=f"Zeek is writing on '{name}' but Vector is NOT forwarding events",
+                        evidence="Zeek logs fresh; Vector sent_events delta = 0",
+                        impact="All logs from this sensor are silently not being forwarded. Detection blind spot.",
+                        probable_causes=[
+                            "Vector file source path does not match ZEEK_LOG_DIR",
+                            "Vector service stopped or in error state",
+                            "Vector sink TLS/auth failure preventing delivery",
+                        ],
+                        next_steps=[
+                            f"SSH to {name}: journalctl -u vector --since '5 min ago'",
+                            f"Check vector.toml file source path matches {settings.ZEEK_LOG_DIR}",
+                            "Check corr.tls.mismatch check status",
+                        ],
+                        fix_location=FIX_ANSIBLE_VECTOR,
+                        confidence="high",
+                    ),
                 ))
             elif not zeek_fresh and vector_moving:
                 checks.append(CheckResult(
@@ -211,27 +231,44 @@ def run_correlation_checks(
     if dp_result and dp_result.metrics_reachable and os_result and os_result.reachable:
         dp_os_in_delta = dp_result.os_records_in - pd.get("os_records_in", dp_result.os_records_in)
         dp_doc_errors = dp_result.os_document_errors - pd.get("os_document_errors", dp_result.os_document_errors)
-        os_count_delta = os_result.total_count - po.get("total_count", os_result.total_count)
+
+        # Use dp_corr_total_count when DP_TO_OS_CORRELATION_INDEX_PATTERN is configured;
+        # otherwise fall back to total_count from the general OPENSEARCH_INDEX_PATTERN query.
+        corr_pattern = (settings.DP_TO_OS_CORRELATION_INDEX_PATTERN or "").strip()
+        if corr_pattern and os_result.dp_corr_total_count > 0:
+            os_count_for_corr = os_result.dp_corr_total_count
+            prev_os_count = po.get("dp_corr_total_count", os_count_for_corr)
+            corr_count_source = f"DP_TO_OS_CORRELATION_INDEX_PATTERN='{corr_pattern}'"
+        else:
+            os_count_for_corr = os_result.total_count
+            prev_os_count = po.get("total_count", os_result.total_count)
+            corr_count_source = f"OPENSEARCH_INDEX_PATTERN='{settings.OPENSEARCH_INDEX_PATTERN}'"
+        os_count_delta = os_count_for_corr - prev_os_count
 
         if dp_os_in_delta > 0 and os_count_delta >= 0:
-            # Detect scope mismatch: DP metrics cover all pipelines/log types,
-            # but OPENSEARCH_INDEX_PATTERN may be narrowed to specific log types.
-            # A comma-separated pattern (e.g. zeek-conn-*,zeek-dns-*) but NOT a
-            # broad wildcard (e.g. zeek-*) means the OS count only covers a subset.
-            scope_ok = _dp_os_scopes_match()
+            scope_ok = corr_pattern or _dp_os_scopes_match()
             if not scope_ok:
                 checks.append(CheckResult(
                     id="corr.dp_os.drop_rate",
                     title="DataPrepper→OpenSearch drop rate",
                     component=C, severity="warning", status=Status.UNKNOWN,
                     details=(
-                        "Drop rate check skipped: Data Prepper metrics cover all pipeline log types "
-                        "but OPENSEARCH_INDEX_PATTERN is narrowed to specific indices. "
-                        "Set DP_TO_OS_CORRELATION_INDEX_PATTERN to the full pattern (e.g. zeek-*) "
-                        "to enable this check."
+                        "Drop rate check skipped: OPENSEARCH_INDEX_PATTERN is narrowed but "
+                        "DP metrics cover all pipelines. Set DP_TO_OS_CORRELATION_INDEX_PATTERN "
+                        "to the full pattern (e.g. zeek-*) to enable this check."
                     ),
-                    remediation=(
-                        "Add DP_TO_OS_CORRELATION_INDEX_PATTERN=zeek-* (or matching scope) to .env."
+                    remediation="Add DP_TO_OS_CORRELATION_INDEX_PATTERN=zeek-* to .env.",
+                    diagnosis=Diagnosis(
+                        problem="Cannot correlate DP→OS drop rate due to index pattern scope mismatch",
+                        evidence=f"OPENSEARCH_INDEX_PATTERN='{settings.OPENSEARCH_INDEX_PATTERN}' is narrowed; DP metrics count all log types",
+                        impact="Drop rate check is UNKNOWN. Cannot confirm data integrity.",
+                        probable_causes=["OPENSEARCH_INDEX_PATTERN set to specific log type indices"],
+                        next_steps=[
+                            "Set DP_TO_OS_CORRELATION_INDEX_PATTERN=zeek-* to use the full index scope",
+                            "Or set OPENSEARCH_INDEX_PATTERN=zeek-* to broaden the main pattern",
+                        ],
+                        fix_location=FIX_VALIDATOR,
+                        confidence="high",
                     ),
                 ))
             else:
@@ -243,11 +280,31 @@ def run_correlation_checks(
                     title="DataPrepper→OpenSearch drop rate",
                     component=C, severity="critical", status=s,
                     current_value=round(drop_pct, 2), threshold=t,
-                    details=f"Estimated drop: {drop_pct:.1f}% (DP sent Δ={dp_os_in_delta:.0f}, OS docs Δ={os_count_delta:.0f})",
+                    details=(
+                        f"Estimated drop: {drop_pct:.1f}% "
+                        f"(DP sent Δ={dp_os_in_delta:.0f}, OS docs Δ={os_count_delta:.0f}, "
+                        f"source: {corr_count_source})"
+                    ),
                     remediation="Check OpenSearch cluster health, disk space, and index mappings." if s != Status.GREEN else "",
+                    diagnosis=Diagnosis(
+                        problem=f"High drop rate between Data Prepper and OpenSearch ({drop_pct:.1f}%)",
+                        evidence=f"DP sent Δ={dp_os_in_delta:.0f}, OS gained Δ={os_count_delta:.0f} via {corr_count_source}",
+                        impact="Events sent by Data Prepper are not reaching OpenSearch. Data loss.",
+                        probable_causes=[
+                            "OpenSearch cluster RED or degraded (check os.cluster.health)",
+                            "Disk full causing write rejection",
+                            "Index mapping conflict causing document rejection",
+                        ],
+                        next_steps=[
+                            "Check os.cluster.health and dp.os.doc_errors checks",
+                            "GET /_cat/nodes?h=name,disk.avail in Dashboards",
+                        ],
+                        fix_location=FIX_OS,
+                        confidence="medium",
+                    ) if s != Status.GREEN else None,
                 ))
 
-        # Indexing stall: OS reachable, DP sending, but OS not growing
+        # Indexing stall
         if dp_os_in_delta > 100 and os_count_delta == 0:
             checks.append(CheckResult(
                 id="corr.dp_os.indexing_stall",
@@ -255,6 +312,15 @@ def run_correlation_checks(
                 component=C, severity="critical", status=Status.RED,
                 details=f"DP sent {dp_os_in_delta:.0f} records but OS doc count unchanged",
                 remediation="Check OpenSearch index lifecycle, shard status, and rejection logs.",
+                diagnosis=Diagnosis(
+                    problem="OpenSearch is not indexing documents despite Data Prepper sending them",
+                    evidence=f"DP os_records_in Δ={dp_os_in_delta:.0f}; OS doc count Δ=0",
+                    impact="Complete indexing failure. All recent events lost.",
+                    probable_causes=["Write block on index", "Cluster RED", "Disk full"],
+                    next_steps=["GET /_cluster/settings to check write blocks", "GET /_cluster/health"],
+                    fix_location=FIX_OS,
+                    confidence="high",
+                ),
             ))
 
         if dp_doc_errors > 0:
@@ -265,6 +331,15 @@ def run_correlation_checks(
                 current_value=dp_doc_errors,
                 details=f"Document errors Δ={dp_doc_errors:.0f}",
                 remediation="Check Data Prepper pipeline transform rules and index mappings.",
+                diagnosis=Diagnosis(
+                    problem=f"Data Prepper reporting {dp_doc_errors:.0f} document indexing errors",
+                    evidence=f"opensearch_documentErrors delta = {dp_doc_errors:.0f}",
+                    impact="BLOCKING: Documents rejected by OpenSearch. Detection data loss.",
+                    probable_causes=["Index mapping conflict", "Missing required field"],
+                    next_steps=["Check DP logs for 'mapper_parsing_exception'", "Review index template"],
+                    fix_location=FIX_DP,
+                    confidence="high",
+                ),
             ))
 
     # ── 4. END-TO-END FRESHNESS ──────────────────────────────────────
@@ -331,7 +406,6 @@ def run_correlation_checks(
         success_delta = dp_result.http_success_requests - pd.get("http_success_requests", dp_result.http_success_requests)
 
         if tls_fail_delta > settings.MAX_DP_TLS_HANDSHAKE_FAILURE_DELTA:
-            # Classify the likely cause
             if success_delta == 0:
                 classification = "likely_plaintext_to_tls_port"
                 hint = "Vector may be sending HTTP to a TLS-only port. Check Vector sink TLS settings."
@@ -347,6 +421,22 @@ def run_correlation_checks(
                 details=f"TLS handshake failures Δ={tls_fail_delta:.0f}, success Δ={success_delta:.0f}. Classification: {classification}",
                 remediation=hint,
                 metadata={"classification": classification},
+                diagnosis=Diagnosis(
+                    problem=f"TLS handshake failures at Data Prepper ingest ({classification})",
+                    evidence=f"armeria TLS failure Δ={tls_fail_delta:.0f}, success Δ={success_delta:.0f}",
+                    impact="BLOCKING: Vector cannot deliver events to Data Prepper over TLS. Data loss.",
+                    probable_causes=(
+                        ["Vector sending HTTP (plaintext) to a TLS-required port"]
+                        if success_delta == 0 else
+                        ["CA cert on sensor does not trust Data Prepper cert", "Cert expired"]
+                    ),
+                    next_steps=[
+                        "Check vector.toml sink TLS settings (tls.enabled, tls.ca_file)",
+                        "Compare Vector sink scheme (http vs https) to Data Prepper listener",
+                    ],
+                    fix_location=FIX_ANSIBLE_VECTOR,
+                    confidence="high",
+                ),
             ))
         elif not dp_result.metrics_tls_ok:
             checks.append(CheckResult(

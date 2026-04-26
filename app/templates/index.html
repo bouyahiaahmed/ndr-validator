@@ -5,6 +5,38 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>NDR Pipeline Validator</title>
   <link rel="stylesheet" href="/static/style.css">
+  <style>
+    /* ── Readiness banner ── */
+    .readiness-banner { display:flex; align-items:center; gap:1.5rem; padding:1rem 1.5rem; border-radius:.5rem; margin-bottom:1rem; }
+    .readiness-banner.not_ready    { background:#3b1010; border:1px solid #c0392b; }
+    .readiness-banner.lab_ready    { background:#2d2510; border:1px solid #d4ac0d; }
+    .readiness-banner.production_candidate { background:#102530; border:1px solid #2980b9; }
+    .readiness-banner.production_ready    { background:#0d2b1a; border:1px solid #27ae60; }
+    .readiness-score { font-size:2.5rem; font-weight:700; min-width:4rem; text-align:center; }
+    .readiness-info  { flex:1; }
+    .readiness-level { font-size:1.1rem; font-weight:600; text-transform:uppercase; letter-spacing:.05em; }
+    .readiness-blocking { margin-top:.5rem; }
+    .readiness-blocking li { color:#e74c3c; font-size:.85rem; }
+    .readiness-warning li  { color:#f39c12; font-size:.85rem; }
+    /* ── What to Fix ── */
+    .wtf-section { margin-top:1.5rem; }
+    .wtf-item { border:1px solid #333; border-radius:.4rem; margin-bottom:.5rem; }
+    .wtf-item summary { padding:.6rem 1rem; cursor:pointer; display:flex; align-items:center; gap:.75rem; font-weight:500; }
+    .wtf-item summary:hover { background:rgba(255,255,255,.04); }
+    .wtf-body { padding:.75rem 1rem 1rem; border-top:1px solid #333; font-size:.87rem; }
+    .wtf-body table { width:100%; border-collapse:collapse; }
+    .wtf-body td { padding:.35rem .5rem; vertical-align:top; }
+    .wtf-body td:first-child { white-space:nowrap; color:#aaa; width:140px; font-weight:500; }
+    .wtf-body ul { margin:.25rem 0 0 1rem; padding:0; }
+    .wtf-body ul li { margin:.15rem 0; }
+    .pill { display:inline-block; padding:.15rem .5rem; border-radius:.3rem; font-size:.78rem; font-weight:600; }
+    .pill-red    { background:#3b1010; color:#e74c3c; border:1px solid #c0392b; }
+    .pill-yellow { background:#2d2510; color:#f39c12; border:1px solid #d4ac0d; }
+    .pill-sensor { background:#1a1a2e; color:#8888cc; border:1px solid #444; font-size:.73rem; }
+    .fix-loc { font-size:.8rem; font-style:italic; color:#88a; }
+    /* ── Liveness/Coverage split ── */
+    .sensor-split { font-size:.8rem; display:flex; gap:.5rem; margin-top:.25rem; }
+  </style>
 </head>
 <body>
   <header class="header">
@@ -27,8 +59,34 @@
   </div>
   {% else %}
 
-  <!-- Pipeline diagram -->
   <div class="container">
+
+    <!-- ── Production Readiness Banner ── -->
+    {% set r = summary.readiness %}
+    <section class="readiness-banner {{ r.readiness_level.value }}">
+      <div class="readiness-score">{{ r.score }}</div>
+      <div class="readiness-info">
+        <div class="readiness-level">{{ r.readiness_level.value | replace('_',' ') }}</div>
+        {% if r.blocking_issues %}
+        <div class="readiness-blocking">
+          <strong style="color:#e74c3c">⛔ {{ r.blocking_issues | length }} blocking issue(s):</strong>
+          <ul>{% for b in r.blocking_issues[:4] %}<li>{{ b | truncate(90) }}</li>{% endfor %}</ul>
+        </div>
+        {% elif r.warnings %}
+        <div class="readiness-warning">
+          <strong style="color:#f39c12">⚠ {{ r.warnings | length }} warning(s)</strong>
+        </div>
+        {% else %}
+        <div style="color:#27ae60;margin-top:.3rem">✓ {{ r.passed_checks | length }} checks passed — stack looks healthy</div>
+        {% endif %}
+      </div>
+      <div>
+        <a href="/readiness" style="font-size:.8rem;color:#aaa">Full readiness JSON →</a><br>
+        <a href="/checks/actionable" style="font-size:.8rem;color:#aaa">What to fix →</a>
+      </div>
+    </section>
+
+    <!-- Pipeline diagram -->
     <section class="pipeline-diagram">
       {% set comps = {} %}
       {% for c in summary.components %}{% set _ = comps.update({c.name.value: c}) %}{% endfor %}
@@ -61,6 +119,47 @@
           {% endfor %}
         </tbody>
       </table>
+    </section>
+    {% endif %}
+
+    <!-- ── What to Fix ── -->
+    {% set actionable = summary.checks | selectattr('status.value', 'in', ['red','yellow']) | list %}
+    {% if actionable %}
+    <section class="section wtf-section">
+      <h2>🔧 What to Fix ({{ actionable | length }} issue{{ 's' if actionable | length != 1 }})</h2>
+      {% for chk in actionable | sort(attribute='severity') %}
+      <details class="wtf-item">
+        <summary>
+          <span class="pill pill-{{ chk.status.value }}">{{ chk.status.value | upper }}</span>
+          <span>{{ chk.title }}</span>
+          {% if chk.sensor %}<span class="pill pill-sensor">{{ chk.sensor }}</span>{% endif %}
+          <span style="margin-left:auto;font-size:.78rem;color:#888">{{ chk.component.value }}</span>
+        </summary>
+        <div class="wtf-body">
+          {% if chk.diagnosis %}
+          {% set d = chk.diagnosis %}
+          <table>
+            <tr><td>Problem</td><td>{{ d.problem }}</td></tr>
+            <tr><td>Evidence</td><td>{{ d.evidence }}</td></tr>
+            <tr><td>Impact</td><td>{{ d.impact }}</td></tr>
+            {% if d.probable_causes %}
+            <tr><td>Likely causes</td><td><ul>{% for c in d.probable_causes %}<li>{{ c }}</li>{% endfor %}</ul></td></tr>
+            {% endif %}
+            {% if d.next_steps %}
+            <tr><td>Next steps</td><td><ul>{% for s in d.next_steps %}<li><code>{{ s }}</code></li>{% endfor %}</ul></td></tr>
+            {% endif %}
+            <tr><td>Fix location</td><td><span class="fix-loc">{{ d.fix_location }}</span></td></tr>
+            <tr><td>Confidence</td><td>{{ d.confidence }}</td></tr>
+          </table>
+          {% else %}
+          <table>
+            <tr><td>Details</td><td>{{ chk.details }}</td></tr>
+            {% if chk.remediation %}<tr><td>Remediation</td><td>{{ chk.remediation }}</td></tr>{% endif %}
+          </table>
+          {% endif %}
+        </div>
+      </details>
+      {% endfor %}
     </section>
     {% endif %}
 
@@ -108,6 +207,34 @@
       </div>
     </section>
 
+    <!-- Sensor liveness & coverage split -->
+    <section class="section">
+      <h2>Sensors</h2>
+      <div class="card-grid">
+        {% for sen in summary.sensors %}
+        <a href="/sensors/{{ sen.sensor_ip }}" class="card card-component card-status-{{ sen.status.value }}">
+          <div class="card-label">{{ sen.display_name }}</div>
+          <div class="badge badge-{{ sen.status.value }}">{{ sen.status.value | upper }}</div>
+          <!-- Liveness vs Coverage split -->
+          {% set liveness = namespace(status='unknown') %}
+          {% set coverage = namespace(status='unknown') %}
+          {% for chk in sen.checks %}
+            {% if 'sensor_liveness' in chk.id %}{% set liveness.status = chk.status.value %}{% endif %}
+            {% if 'detection_coverage' in chk.id and chk.status.value == 'red' %}{% set coverage.status = 'red' %}
+            {% elif 'detection_coverage' in chk.id and coverage.status != 'red' and chk.status.value == 'yellow' %}{% set coverage.status = 'yellow' %}
+            {% elif 'detection_coverage' in chk.id and coverage.status not in ('red','yellow') %}{% set coverage.status = chk.status.value %}{% endif %}
+          {% endfor %}
+          <div class="sensor-split">
+            <span title="Sensor Liveness">🛰 <span class="badge badge-{{ liveness.status }}" style="font-size:.7rem">live</span></span>
+            <span title="Detection Coverage">🔍 <span class="badge badge-{{ coverage.status }}" style="font-size:.7rem">coverage</span></span>
+          </div>
+          <div class="card-summary">{{ sen.sensor_ip }}</div>
+          <div class="card-summary">{{ sen.checks | length }} checks</div>
+        </a>
+        {% endfor %}
+      </div>
+    </section>
+
     <!-- Component cards -->
     <section class="section">
       <h2>Components</h2>
@@ -117,21 +244,6 @@
           <div class="card-label">{{ comp.name.value | upper }}</div>
           <div class="badge badge-{{ comp.status.value }}">{{ comp.status.value | upper }}</div>
           <div class="card-summary">{{ comp.summary }}</div>
-        </a>
-        {% endfor %}
-      </div>
-    </section>
-
-    <!-- Sensor cards -->
-    <section class="section">
-      <h2>Sensors</h2>
-      <div class="card-grid">
-        {% for sen in summary.sensors %}
-        <a href="/sensors/{{ sen.sensor_ip }}" class="card card-component card-status-{{ sen.status.value }}">
-          <div class="card-label">{{ sen.display_name }}</div>
-          <div class="badge badge-{{ sen.status.value }}">{{ sen.status.value | upper }}</div>
-          <div class="card-summary">{{ sen.sensor_ip }}</div>
-          <div class="card-summary">{{ sen.checks | length }} checks</div>
         </a>
         {% endfor %}
       </div>
@@ -153,13 +265,17 @@
           <div class="card-label">Total Checks</div>
           <div class="card-value">{{ summary.checks | length }}</div>
         </div>
+        <div class="card">
+          <div class="card-label">Readiness Score</div>
+          <div class="card-value">{{ summary.readiness.score }}/100</div>
+        </div>
       </div>
     </section>
   </div>
   {% endif %}
 
   <footer class="footer">
-    NDR Pipeline Validator &mdash; <a href="/docs">API Docs</a> &mdash; <a href="/metrics">Prometheus Metrics</a> &mdash; <a href="/history">History</a>
+    NDR Pipeline Validator &mdash; <a href="/docs">API Docs</a> &mdash; <a href="/metrics">Prometheus Metrics</a> &mdash; <a href="/history">History</a> &mdash; <a href="/readiness">Readiness</a> &mdash; <a href="/checks/actionable">What to Fix</a>
   </footer>
   <script src="/static/app.js"></script>
 </body>

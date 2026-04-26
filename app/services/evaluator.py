@@ -25,6 +25,8 @@ from app.checks.dashboards_checks import run_dashboards_checks
 from app.checks.zeek_checks import run_zeek_checks
 from app.checks.data_quality_checks import run_data_quality_checks
 from app.checks.correlation_checks import run_correlation_checks
+from app.checks.freshness_checks import run_sensor_liveness_checks, run_detection_coverage_checks
+from app.services.readiness import compute_readiness
 from app import db
 from app import metrics as prom
 from app.utils.time import utcnow
@@ -127,6 +129,15 @@ async def run_scrape_cycle() -> StatusSummary:
     )
     all_checks.extend(corr_checks)
 
+    # Split freshness checks
+    liveness_checks = run_sensor_liveness_checks(os_result.sensor_liveness_freshness)
+    all_checks.extend(liveness_checks)
+    coverage_checks = run_detection_coverage_checks(os_result.log_type_freshness)
+    all_checks.extend(coverage_checks)
+
+    # Production readiness score
+    readiness = compute_readiness(all_checks, ssh_enabled=settings.ENABLE_SENSOR_SSH)
+
     # ── Persist snapshots ────────────────────────────────────────────
     for vr in vector_results:
         await db.save_snapshot(MetricSnapshot(
@@ -164,6 +175,7 @@ async def run_scrape_cycle() -> StatusSummary:
         checks=all_checks,
         urgent_findings=urgent,
         rates=rates,
+        readiness=readiness,
     )
     _latest_summary = summary
 
@@ -310,9 +322,14 @@ def _compute_rates(
         0, dp_result.os_records_in - prev_dp.get("os_records_in", dp_result.os_records_in)
     )
 
-    # OS doc count delta
-    prev_count = prev_os.get("total_count", os_result.total_count)
-    rates.os_doc_count_delta = max(0, os_result.total_count - prev_count)
+    # OS doc count delta – use correlation pattern count when configured
+    corr_pattern = (settings.DP_TO_OS_CORRELATION_INDEX_PATTERN or "").strip()
+    if corr_pattern and os_result.dp_corr_total_count > 0:
+        prev_count = prev_os.get("dp_corr_total_count", os_result.dp_corr_total_count)
+        rates.os_doc_count_delta = max(0, os_result.dp_corr_total_count - prev_count)
+    else:
+        prev_count = prev_os.get("total_count", os_result.total_count)
+        rates.os_doc_count_delta = max(0, os_result.total_count - prev_count)
 
     # Drop percentages
     if rates.vector_total_sent_delta > 0 and rates.dp_records_processed_delta >= 0:
